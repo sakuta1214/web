@@ -154,9 +154,6 @@ const MenuScreen = ({ navigate }) => {
         <Button onClick={() => { clearUserData(); navigate('step1'); }} color={COLORS.PRIMARY}>
           新規利用者登録
         </Button>
-        <Button onClick={() => navigate('user_list')} color={COLORS.DARK_BUTTON}>
-          登録者一覧を見る
-        </Button>
         <Button onClick={() => alert('アプリを終了します。')} color={COLORS.DARK_BUTTON}>
           アプリを終了
         </Button>
@@ -324,9 +321,8 @@ const DetailScreen = ({ navigate }) => {
 
   const renderFieldValue = (fieldId, value) => {
     if (fieldId === 'photo_path') {
-      // ウェブではphoto_pathはPhotoCaptureScreenからのbase64文字列
-      // PHOTO_DIRやos.path.existsのチェックは不要
-      return value && typeof value === 'string' && value.startsWith('data:image/') ? (
+      // photo_path が 'data:image/' で始まる場合はbase64、そうでなければURLとして表示
+      return value && typeof value === 'string' && (value.startsWith('data:image/') || value.startsWith('http://') || value.startsWith('https://')) ? (
         <img src={value} alt="顔写真" className="max-w-xs max-h-[150px] object-contain rounded-md" />
       ) : (
         <span>写真なし</span>
@@ -677,7 +673,7 @@ const PhotoCaptureScreen = ({ navigate }) => {
   const [displayedImageSrc, setDisplayedImageSrc] = useState(''); // Imageコンポーネントのソースを格納
   const [status, setStatus] = useState({ message: 'カメラ準備中...', type: 'loading' });
   const [faceDetectionResult, setFaceDetectionResult] = useState('');
-  const [faceCount, setFaceCount] = useState(0);
+  const [isUploading, setIsUploading] = useState(false); // アップロード中を示す新しい状態
 
   const { user_data, setUserData } = useContext(AppContext);
 
@@ -690,6 +686,9 @@ const PhotoCaptureScreen = ({ navigate }) => {
           videoRef.current.srcObject = stream;
           videoRef.current.play();
           setStatus({ message: 'カメラ稼働中', type: '' });
+          setFaceDetectionResult(''); // Reset messages on camera start
+          setDisplayedImageSrc(''); // Clear previous image
+          setCapturedImageBase64(''); // Clear previous base64
         }
       } catch (err) {
         console.error("Camera access error: ", err);
@@ -718,38 +717,37 @@ const PhotoCaptureScreen = ({ navigate }) => {
     canvas.height = video.videoHeight;
     const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = canvas.toDataURL('image/png'); // base64 PNGとして画像データを取得
+    const imageData = canvas.toDataURL('image/png'); // Get image data as base64 PNG
 
-    setCapturedImageBase64(imageData);
-    setDisplayedImageSrc(imageData); // まずは生の写真を表示
-    setStatus({ message: '写真を撮影しました。顔検出中...', type: 'loading' });
+    setCapturedImageBase64(imageData); // ローカルで表示するためにbase64を保存
+    setDisplayedImageSrc(imageData); // まずは撮影したbase64イメージを表示
+
+    setIsUploading(true); // アップロード開始
+    setStatus({ message: '写真を撮影しました。サーバーへアップロード中...', type: 'loading' });
+    setFaceDetectionResult(''); // 以前の顔検出結果をクリア
 
     try {
-      const response = await fetch(`${API_BASE_URL}/process_image`, {
+      const response = await fetch(`${API_BASE_URL}/upload_photo`, { // 新しいアップロードエンドポイント
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imageData }),
-        signal: AbortSignal.timeout(10000), // 画像処理のためのタイムアウトを延長
+        signal: AbortSignal.timeout(30000), // アップロードのためのタイムアウトを延長
       });
       const result = await response.json();
 
       if (response.ok) {
-        setDisplayedImageSrc(`data:image/png;base64,${result.image}`); // 処理された画像を表示
-        setFaceCount(result.face_count);
-        if (result.face_count > 0) {
-          setFaceDetectionResult(`顔を${result.face_count}個検出しました。`);
-          setStatus({ message: '顔検出が完了しました。', type: 'success' });
-        } else {
-          setFaceDetectionResult('顔が検出されませんでした。顔が鮮明に写るように再撮影を推奨します。');
-          setStatus({ message: '顔検出が完了しました。', type: 'error' });
-        }
+        setDisplayedImageSrc(result.photo_url); // サーバーから返されたURLを表示
+        setFaceDetectionResult('写真はサーバーに保存されました。');
+        setStatus({ message: '写真のアップロードが完了しました。', type: 'success' });
       } else {
-        setFaceDetectionResult(`顔検出エラー: ${result.message || '不明なエラー'}`);
-        setStatus({ message: '顔検出に失敗しました。', type: 'error' });
+        setFaceDetectionResult(`写真のアップロードエラー: ${result.message || '不明なエラー'}`);
+        setStatus({ message: '写真のアップロードに失敗しました。', type: 'error' });
       }
     } catch (error) {
-      setFaceDetectionResult(`通信エラー: サーバーの画像処理APIに接続できません。(${error.message})`);
-      setStatus({ message: '顔検出に失敗しました。', type: 'error' });
+      setFaceDetectionResult(`通信エラー: 写真アップロードAPIに接続できません。(${error.message})`);
+      setStatus({ message: '写真のアップロードに失敗しました。', type: 'error' });
+    } finally {
+      setIsUploading(false); // アップロード終了
     }
   };
 
@@ -758,18 +756,19 @@ const PhotoCaptureScreen = ({ navigate }) => {
     setDisplayedImageSrc('');
     setStatus({ message: 'カメラ準備中...', type: 'loading' });
     setFaceDetectionResult('');
-    setFaceCount(0);
+    setIsUploading(false); // アップロード状態をリセット
     if (videoRef.current) {
       videoRef.current.play(); // 再撮影のためにビデオストリームを再開
     }
   };
 
   const confirmPhoto = () => {
-    if (faceCount > 0 && displayedImageSrc) { // 顔が検出され、画像が存在する場合のみ確定
-      setUserData(prevUserData => ({ ...prevUserData, photo_path: displayedImageSrc }));
+    // displayedImageSrc がサーバーからのURLになったか、またはbase64データがあるか確認
+    if (displayedImageSrc) {
+      setUserData(prevUserData => ({ ...prevUserData, photo_path: displayedImageSrc })); // サーバーURLまたはbase64データを保存
       navigate('step1');
     } else {
-      setStatus({ message: '顔が検出された写真を選択してください。', type: 'error' });
+      setStatus({ message: '写真が撮影またはアップロードされていません！', type: 'error' });
     }
   };
 
@@ -778,40 +777,45 @@ const PhotoCaptureScreen = ({ navigate }) => {
     navigate('step1');
   };
 
+  // ボタンのdisabled状態を適切に制御
+  const captureButtonDisabled = isUploading || status.type === 'loading';
+  const retakeButtonDisabled = isUploading || !capturedImageBase64; // 撮影済みでなければ撮り直しはできない
+  const confirmButtonDisabled = isUploading || !displayedImageSrc; // アップロード済みまたは表示可能でなければ確定できない
+
+
   return (
     <div className="flex flex-col h-screen bg-gray-100 p-6">
       <h1 className={`text-3xl font-bold text-[${COLORS.PRIMARY}] mb-6 text-center`}>顔写真撮影</h1>
 
       <div className="flex-grow flex flex-col items-center justify-center bg-gray-200 rounded-lg overflow-hidden relative">
-        {!capturedImageBase64 ? (
+        {!capturedImageBase64 ? ( // 撮影前はカメラプレビュー
           <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain"></video>
-        ) : (
+        ) : ( // 撮影後はプレビュー画像を表示
           <img src={displayedImageSrc} alt="Captured" className="w-full h-full object-contain" />
         )}
         <canvas ref={canvasRef} style={{ display: 'none' }}></canvas> {/* 画像処理用の非表示キャンバス */}
       </div>
 
       <StatusMessage message={status.message} type={status.type} />
-      <p className="text-center text-sm mt-1" style={{ color: faceCount > 0 ? COLORS.SUCCESS : COLORS.DANGER }}>
+      <p className="text-center text-sm mt-1" style={{ color: status.type === 'success' ? COLORS.SUCCESS : COLORS.DANGER }}>
         {faceDetectionResult}
       </p>
 
       <div className="mt-6 flex space-x-3">
-        {!capturedImageBase64 ? (
-          <Button onClick={capturePhoto} color={COLORS.PRIMARY} className="flex-1" icon={LucideReact.Camera}>
-            撮影
-          </Button>
-        ) : (
-          <>
-            <Button onClick={retakePhoto} color={COLORS.DARK_BUTTON} className="flex-1" disabled={status.type === 'loading'}>
-              撮り直し
-            </Button>
-            <Button onClick={confirmPhoto} color={COLORS.SUCCESS} className="flex-1" disabled={faceCount === 0 || status.type === 'loading'}>
-              この写真で決定
-            </Button>
-          </>
-        )}
-        <Button onClick={cancelCapture} color={COLORS.DANGER} className="flex-1" disabled={status.type === 'loading'}>
+        {/* 撮影ボタン */}
+        <Button onClick={capturePhoto} color={COLORS.PRIMARY} className="flex-1" icon={LucideReact.Camera} disabled={captureButtonDisabled}>
+          撮影
+        </Button>
+        {/* 撮り直しボタン */}
+        <Button onClick={retakePhoto} color={COLORS.DARK_BUTTON} className="flex-1" disabled={retakeButtonDisabled}>
+          撮り直し
+        </Button>
+        {/* この写真で決定ボタン */}
+        <Button onClick={confirmPhoto} color={COLORS.SUCCESS} className="flex-1" disabled={confirmButtonDisabled}>
+          この写真で決定
+        </Button>
+        {/* キャンセルボタン */}
+        <Button onClick={cancelCapture} color={COLORS.DANGER} className="flex-1" disabled={isUploading}>
           キャンセル
         </Button>
       </div>
