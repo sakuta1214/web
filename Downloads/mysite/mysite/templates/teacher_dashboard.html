@@ -1,0 +1,184 @@
+{% extends 'index.html' %}
+{% block title %}先生用ダッシュボード{% endblock %}
+{% block content %}
+<h1>先生用ダッシュボード</h1>
+<div id="teacher-status">
+    <p>認証中...</p>
+</div>
+
+<div id="qr-generator" style="display: none;">
+    <h2>クラスQRコード生成</h2>
+    <form id="generate-qr-form">
+        <div>
+            <label for="class-name">クラス名:</label>
+            <input type="text" id="class-name" name="class_name" required>
+        </div>
+        <button type="submit">QRコードを生成</button>
+    </form>
+
+    <div id="qr-code-display" style="margin-top: 20px;">
+        <h3>生成されたQRコード</h3>
+        <div id="qrcode"></div>
+        <p>スキャン用URL: <a id="join-url-link" href="#" target="_blank"></a></p>
+    </div>
+</div>
+
+<div id="student-list-section" style="margin-top: 40px;">
+    <h2>クラスの生徒一覧</h2>
+    <div id="student-list">
+        <p>生徒情報を読み込み中...</p>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
+<script>
+    document.body.addEventListener('liff-ready', async (e) => {
+        console.log("LIFF ready on teacher_dashboard page.");
+
+        const teacherStatusDiv = document.getElementById('teacher-status');
+        const qrGeneratorDiv = document.getElementById('qr-generator');
+        const generateQrForm = document.getElementById('generate-qr-form');
+        const qrcodeDiv = document.getElementById('qrcode');
+        const joinUrlLink = document.getElementById('join-url-link');
+        const classNameInput = document.getElementById('class-name');
+        const studentListDiv = document.getElementById('student-list');
+
+        if (!liff.isLoggedIn()) {
+            teacherStatusDiv.innerHTML = '<p style="color: red;">ログインしていません。ログインしてください。</p>';
+            liff.login();
+            return;
+        }
+
+        try {
+            const idToken = liff.getIDToken();
+            if (!idToken) {
+                teacherStatusDiv.innerHTML = '<p style="color: red;">エラー: IDトークンが取得できませんでした。</p>';
+                return;
+            }
+
+            // 先生のロールを確認
+            const userProfileResponse = await fetch('/api/user', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${idToken}`,
+                    'Content-Type': 'application/json',
+                },
+            });
+            const userProfileResult = await userProfileResponse.json();
+
+            if (userProfileResponse.ok && userProfileResult.status === 'success' && userProfileResult.data.role === 'teacher') {
+                teacherStatusDiv.innerHTML = '<p style="color: green;">先生として認証されました。</p>';
+                qrGeneratorDiv.style.display = 'block';
+                
+                // 生徒リストを読み込む
+                await fetchStudents(idToken);
+
+            } else {
+                teacherStatusDiv.innerHTML = '<p style="color: red;">先生として認証されませんでした。このページにはアクセスできません。</p>';
+                return;
+            }
+
+            generateQrForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+
+                const className = classNameInput.value;
+                if (!className) {
+                    alert('クラス名を入力してください。');
+                    return;
+                }
+
+                try {
+                    const qrResponse = await fetch('/api/teacher/generate_qr', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            idToken: idToken,
+                            class_name: className
+                        }),
+                    });
+
+                    const qrResult = await qrResponse.json();
+
+                    if (qrResponse.ok && qrResult.status === 'success') {
+                        const joinUrl = qrResult.join_url;
+                        
+                        // 既存のQRコードをクリア
+                        qrcodeDiv.innerHTML = '';
+                        // QRコードを生成
+                        new QRCode(qrcodeDiv, {
+                            text: joinUrl,
+                            width: 256,
+                            height: 256,
+                            colorDark : "#000000",
+                            colorLight : "#ffffff",
+                            correctLevel : QRCode.CorrectLevel.H
+                        });
+                        joinUrlLink.href = joinUrl;
+                        joinUrlLink.textContent = joinUrl;
+                        alert('QRコードが生成されました！');
+                        // QRコード生成後、生徒リストを再読み込み
+                        await fetchStudents(idToken);
+                    } else {
+                        alert(`QRコード生成に失敗しました: ${qrResult.message || qrResponse.statusText}`);
+                        console.error('QR generation failed:', qrResult);
+                    }
+                } catch (qrError) {
+                    console.error('Error generating QR code:', qrError);
+                    alert('QRコード生成中にエラーが発生しました。');
+                }
+            });
+
+        } catch (error) {
+            console.error("LIFF処理中にエラーが発生しました。", error);
+            teacherStatusDiv.innerHTML = '<p style="color: red;">エラーが発生しました。ページをリロードしてください。</p>';
+        }
+
+        async function fetchStudents(idToken) {
+            studentListDiv.innerHTML = '<p>生徒情報を読み込み中...</p>';
+            try {
+                const studentsResponse = await fetch('/api/teacher/my_students', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${idToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                });
+                const studentsResult = await studentsResponse.json();
+
+                if (studentsResponse.ok && studentsResult.status === 'success') {
+                    if (studentsResult.data.length > 0) {
+                        studentListDiv.innerHTML = ''; // Clear loading message
+                        studentsResult.data.forEach(student => {
+                            const studentCard = document.createElement('div');
+                            studentCard.className = 'student-card';
+                            studentCard.style.border = '1px solid #ccc';
+                            studentCard.style.padding = '10px';
+                            studentCard.style.margin = '10px 0';
+                            studentCard.style.borderRadius = '5px';
+                            studentCard.innerHTML = `
+                                <p><strong>名前:</strong> ${student.name}</p>
+                                <p><strong>学校:</strong> ${student.school}</p>
+                                <p><strong>クラス:</strong> ${student.class_name}</p>
+                                <p><strong>LINE User ID:</strong> ${student.line_user_id}</p>
+                                <p><strong>登録済み:</strong> ${student.is_registered ? 'はい' : 'いいえ'}</p>
+                                <p><strong>役割:</strong> ${student.role}</p>
+                            `;
+                            studentListDiv.appendChild(studentCard);
+                        });
+                    } else {
+                        studentListDiv.innerHTML = '<p>まだクラスに参加している生徒はいません。</p>';
+                    }
+                } else {
+                    studentListDiv.innerHTML = `<p style="color: red;">生徒情報の取得に失敗しました: ${studentsResult.message || studentsResponse.statusText}</p>`;
+                    console.error('Failed to fetch students:', studentsResult);
+                }
+            } catch (error) {
+                console.error('Error fetching students:', error);
+                studentListDiv.innerHTML = '<p style="color: red;">生徒情報の取得中にエラーが発生しました。</p>';
+            }
+        }
+    });
+</script>
+{% endblock %}
