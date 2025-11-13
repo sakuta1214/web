@@ -1099,25 +1099,23 @@ def index():
 
 @app.route('/posts')
 def posts():
-    return render_template('posts.html')
+    return render_template('posts.html', liff_id_primary=config.LIFF_ID_PRIMARY)
 
 @app.route('/mypage')
 def mypage():
-    return render_template('mypage.html')
+    return render_template('mypage.html', liff_id_primary=config.LIFF_ID_PRIMARY)
 
 @app.route('/rules')
-
 def rules():
+    return render_template('rules.html', liff_id_primary=config.LIFF_ID_PRIMARY)
 
     return render_template('rules.html')
 
 
 
 @app.route('/contact')
-
-
-
 def contact():
+    return render_template('contact.html', liff_id_primary=config.LIFF_ID_PRIMARY)
 
 
 
@@ -1130,14 +1128,8 @@ def contact():
 
 
 @app.route('/join_class')
-
-
-
-
-
-
-
 def join_class_page():
+    return render_template('join_class.html', liff_id_primary=config.LIFF_ID_PRIMARY)
 
 
 
@@ -1162,14 +1154,8 @@ def join_class_page():
 
 
 @app.route('/teacher_dashboard')
-
-
-
-
-
-
-
 def teacher_dashboard():
+    return render_template('teacher_dashboard.html', liff_id_primary=config.LIFF_ID_PRIMARY)
 
 
 
