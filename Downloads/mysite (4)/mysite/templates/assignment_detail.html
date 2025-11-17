@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}課題詳細{% endblock %}
+
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+    .assignment-container {
+        max-width: 800px;
+        margin: 2rem auto;
+        padding: 2rem;
+        background-color: #fff;
+        border-radius: 8px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .submission-list {
+        list-style-type: none;
+        padding: 0;
+    }
+    .submission-item {
+        background-color: #f9f9f9;
+        border: 1px solid #ddd;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 5px;
+    }
+    .submission-item h4 {
+        margin-top: 0;
+    }
+    .submission-content a {
+        color: #007bff;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="assignment-container">
+    <h2 id="assignment-title">読み込み中...</h2>
+    <p id="assignment-description"></p>
+    <p><strong>提出期限:</strong> <span id="assignment-due-date"></span></p>
+
+    <hr>
+
+    <h3>提出物一覧</h3>
+    <div id="submission-list-container">
+        <p>読み込み中...</p>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', async function() {
+    const liffId = '{{ liff_id }}';
+    await liff.init({ liffId });
+
+    if (!liff.isLoggedIn()) {
+        liff.login();
+        return;
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const assignmentId = urlParams.get('assignment_id');
+    if (!assignmentId) {
+        alert('課題IDが指定されていません。');
+        window.history.back();
+        return;
+    }
+
+    const idToken = liff.getIDToken();
+
+    // Fetch assignment details
+    try {
+        const response = await fetch(`/api/teacher/assignment/${assignmentId}`, {
+            headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        if (!response.ok) throw new Error('Failed to fetch assignment details');
+        const result = await response.json();
+        const assignment = result.data;
+        document.getElementById('assignment-title').textContent = assignment.title;
+        document.getElementById('assignment-description').textContent = assignment.description;
+        document.getElementById('assignment-due-date').textContent = new Date(assignment.due_date).toLocaleString('ja-JP');
+    } catch (error) {
+        console.error(error);
+        alert('課題の詳細の読み込みに失敗しました。');
+    }
+
+    // Fetch submissions
+    const submissionListContainer = document.getElementById('submission-list-container');
+    try {
+        const response = await fetch(`/api/teacher/assignment/${assignmentId}/submissions`, {
+            headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        if (!response.ok) throw new Error('Failed to fetch submissions');
+        const result = await response.json();
+        renderSubmissions(result.data);
+    } catch (error) {
+        console.error(error);
+        submissionListContainer.innerHTML = '<p>提出物の読み込みに失敗しました。</p>';
+    }
+
+    function renderSubmissions(submissions) {
+        if (submissions.length === 0) {
+            submissionListContainer.innerHTML = '<p>まだ提出物はありません。</p>';
+            return;
+        }
+        const list = document.createElement('ul');
+        list.className = 'submission-list';
+        submissions.forEach(sub => {
+            const item = document.createElement('li');
+            item.className = 'submission-item';
+            const submittedAt = new Date(sub.submitted_at).toLocaleString('ja-JP');
+            
+            let contentHtml = '';
+            if (sub.submission_type === 'text') {
+                contentHtml = `<p>${sub.content.replace(/\n/g, '<br>')}</p>`;
+            } else if (sub.submission_type === 'file') {
+                contentHtml = `<p><a href="${sub.content}" target="_blank" rel="noopener noreferrer">提出ファイルを表示</a></p>`;
+            }
+
+            item.innerHTML = "`
+                <h4>${sub.student_name}</h4>
+                <p><strong>提出日時:</strong> ${submittedAt}</p>
+                <div class=\"submission-content\">
+                    ${contentHtml}
+                </div>
+            `";
+            list.appendChild(item);
+        });
+        submissionListContainer.innerHTML = '';
+        submissionListContainer.appendChild(list);
+    }
+});
+</script>
+{% endblock %}

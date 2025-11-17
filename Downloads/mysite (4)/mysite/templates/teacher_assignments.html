@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}課題管理{% endblock %}
+
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+    .assignment-container {
+        max-width: 800px;
+        margin: 2rem auto;
+        padding: 2rem;
+        background-color: #fff;
+        border-radius: 8px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .assignment-list, .submission-list {
+        list-style-type: none;
+        padding: 0;
+    }
+    .assignment-item, .submission-item {
+        background-color: #f9f9f9;
+        border: 1px solid #ddd;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 5px;
+    }
+    .assignment-item a {
+        text-decoration: none;
+        color: #333;
+        font-weight: bold;
+    }
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
+    .form-group label {
+        display: block;
+        margin-bottom: .5rem;
+        font-weight: bold;
+    }
+    .form-group input, .form-group textarea {
+        width: 100%;
+        padding: .5rem;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+    }
+    .btn-primary {
+        background-color: #007bff;
+        color: white;
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="assignment-container">
+    <h2>課題管理 (<span id="class-name-display"></span>)</h2>
+
+    <hr>
+
+    <h3>新しい課題を作成</h3>
+    <form id="create-assignment-form">
+        <div class="form-group">
+            <label for="title">課題タイトル</label>
+            <input type="text" id="title" name="title" required>
+        </div>
+        <div class="form-group">
+            <label for="description">詳細</label>
+            <textarea id="description" name="description" rows="4"></textarea>
+        </div>
+        <div class="form-group">
+            <label for="due_date">提出期限</label>
+            <input type="datetime-local" id="due_date" name="due_date" required>
+        </div>
+        <button type="submit" class="btn-primary">作成</button>
+    </form>
+
+    <hr style="margin-top: 2rem;">
+
+    <h3>課題一覧</h3>
+    <div id="assignment-list-container">
+        <p>読み込み中...</p>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', async function() {
+    const liffId = '{{ liff_id }}';
+    await liff.init({ liffId });
+
+    if (!liff.isLoggedIn()) {
+        liff.login();
+        return;
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const classId = urlParams.get('class_id');
+    if (!classId) {
+        alert('クラスIDが指定されていません。');
+        window.location.href = '{{ url_for("teacher_dashboard") }}';
+        return;
+    }
+
+    const idToken = liff.getIDToken();
+
+    // Fetch class name to display
+    try {
+        const classDetailsRes = await fetch(`/api/teacher/class/${classId}`, {
+            headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        if (classDetailsRes.ok) {
+            const classDetails = await classDetailsRes.json();
+            document.getElementById('class-name-display').textContent = classDetails.data.class_name;
+        }
+    } catch (e) {
+        console.error('Failed to fetch class name:', e);
+    }
+
+
+    const assignmentListContainer = document.getElementById('assignment-list-container');
+
+    async function fetchAssignments() {
+        try {
+            const response = await fetch(`/api/teacher/class/${classId}/assignments`, {
+                headers: { 'Authorization': `Bearer ${idToken}` }
+            });
+            if (!response.ok) {
+                throw new Error('Failed to fetch assignments');
+            }
+            const result = await response.json();
+            renderAssignments(result.data);
+        } catch (error) {
+            console.error(error);
+            assignmentListContainer.innerHTML = '<p>課題の読み込みに失敗しました。</p>';
+        }
+    }
+
+    function renderAssignments(assignments) {
+        if (assignments.length === 0) {
+            assignmentListContainer.innerHTML = '<p>まだ課題はありません。</p>';
+            return;
+        }
+        const list = document.createElement('ul');
+        list.className = 'assignment-list';
+        assignments.forEach(assignment => {
+            const item = document.createElement('li');
+            item.className = 'assignment-item';
+            const dueDate = new Date(assignment.due_date).toLocaleString('ja-JP');
+            item.innerHTML = `
+                <a href="/teacher/assignment_detail?assignment_id=${assignment.id}">
+                    ${assignment.title}
+                </a>
+                <p>期限: ${dueDate}</p>
+            `;
+            list.appendChild(item);
+        });
+        assignmentListContainer.innerHTML = '';
+        assignmentListContainer.appendChild(list);
+    }
+
+    document.getElementById('create-assignment-form').addEventListener('submit', async function(event) {
+        event.preventDefault();
+        const title = document.getElementById('title').value;
+        const description = document.getElementById('description').value;
+        const dueDate = document.getElementById('due_date').value;
+
+        try {
+            const response = await fetch(`/api/teacher/class/${classId}/assignments`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${idToken}`
+                },
+                body: JSON.stringify({ title, description, due_date: new Date(dueDate).toISOString() })
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to create assignment');
+            }
+
+            alert('課題が作成されました。');
+            this.reset();
+            fetchAssignments(); // Refresh the list
+        } catch (error) {
+            console.error(error);
+            alert(`エラー: ${error.message}`);
+        }
+    });
+
+    fetchAssignments();
+});
+</script>
+{% endblock %}

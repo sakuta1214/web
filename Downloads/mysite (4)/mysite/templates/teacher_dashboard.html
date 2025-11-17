@@ -1,0 +1,417 @@
+{% extends 'base.html' %}
+{% block title %}先生用ダッシュボード{% endblock %}
+{% block content %}
+<h1 class="mb-4">先生用ダッシュボード</h1>
+<div id="teacher-status" class="mb-4">
+    <div class="alert alert-info">認証中...</div>
+</div>
+
+<div id="class-management" style="display: none;">
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <h2 class="card-title h4">新しいクラスを作成</h2>
+            <form id="create-class-form">
+                <div class="mb-3">
+                    <label for="new-class-name" class="form-label">クラス名</label>
+                    <input type="text" class="form-control" id="new-class-name" name="class_name" required placeholder="例: 3年1組">
+                </div>
+                <button type="submit" class="btn btn-primary">クラスを作成</button>
+            </form>
+        </div>
+    </div>
+
+    <hr class="my-4">
+
+    <div>
+        <h2 class="h4">作成済みクラス一覧</h2>
+        <div id="class-list">
+            <div class="d-flex justify-content-center mt-4">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">読み込み中...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <hr class="my-4">
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <h2 class="card-title h4">クラス全体の活動分析</h2>
+            <div class="mb-3">
+                <label for="class-select-for-analysis" class="form-label">分析するクラスを選択</label>
+                <select class="form-select" id="class-select-for-analysis">
+                    <option value="">クラスを選択してください</option>
+                    <!-- クラスリストはJSで動的に追加 -->
+                </select>
+            </div>
+            <div id="class-analysis-content" style="min-height: 200px;" class="d-flex align-items-center justify-content-center">
+                <p class="text-muted">クラスを選択すると、ここに分析結果が表示されます。</p>
+            </div>
+        </div>
+    </div>
+
+    <hr class="my-4">
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <h2 class="card-title h4">個別生徒の活動レポート</h2>
+            <div class="mb-3">
+                <label for="class-select-for-student-report" class="form-label">レポート対象クラスを選択</label>
+                <select class="form-select" id="class-select-for-student-report">
+                    <option value="">クラスを選択してください</option>
+                </select>
+            </div>
+            <div class="mb-3">
+                <label for="student-select-for-report" class="form-label">レポート対象生徒を選択</label>
+                <select class="form-select" id="student-select-for-report" disabled>
+                    <option value="">生徒を選択してください</option>
+                </select>
+            </div>
+            <div id="student-report-content" style="min-height: 200px;" class="d-flex align-items-center justify-content-center">
+                <p class="text-muted">クラスと生徒を選択すると、ここにレポートが表示されます。</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let allTeacherClasses = []; // 全ての先生のクラス情報を保持
+    let classStudentsMap = new Map(); // classId -> [{line_user_id, display_name}]
+
+    /**
+     * 認証情報付きでAPIリクエストを送信し、トークン切れをハンドリングする共通関数
+     */
+    async function fetchWithAuth(url, options = {}) {
+        const idToken = liff.getIDToken();
+        if (!idToken) {
+            alert('認証情報が見つかりません。再度ログインしてください。');
+            liff.logout();
+            liff.login({ redirectUri: window.location.href });
+            return new Promise(() => {});
+        }
+        const headers = { ...options.headers, 'Authorization': `Bearer ${idToken}` };
+        const response = await fetch(url, { ...options, headers });
+        if (response.status === 401) {
+            try {
+                const errorData = await response.json();
+                if (errorData.message && errorData.message.includes('ID Token has expired')) {
+                    alert('セッションの有効期限が切れました。再度ログインしてください。');
+                    liff.logout();
+                    liff.login({ redirectUri: window.location.href });
+                    return new Promise(() => {}); 
+                }
+            } catch (e) {
+                alert('認証エラーが発生しました。再度ログインしてください。');
+                liff.logout();
+                liff.login({ redirectUri: window.location.href });
+                return new Promise(() => {});
+            }
+        }
+        return response;
+    }
+
+    /**
+     * クラス作成フォームの送信を処理
+     */
+    async function handleCreateClass(event) {
+        event.preventDefault();
+        const newClassNameInput = document.getElementById('new-class-name');
+        const className = newClassNameInput.value.trim();
+        if (!className) {
+            alert('クラス名を入力してください。');
+            return;
+        }
+        const submitButton = event.target.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+        submitButton.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 作成中...';
+
+        try {
+            const response = await fetchWithAuth('/api/teacher/classes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ class_name: className }),
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                alert('新しいクラスが作成されました！');
+                newClassNameInput.value = '';
+                await fetchAndDisplayClasses();
+            } else {
+                alert(`クラスの作成に失敗しました: ${result.message}`);
+            }
+        } catch (error) {
+            console.error('Error creating class:', error);
+            alert('クラス作成中にエラーが発生しました。');
+        } finally {
+            submitButton.disabled = false;
+            submitButton.innerHTML = 'クラスを作成';
+        }
+    }
+
+    /**
+     * クラス選択ボタンのクリックを処理
+     */
+    function handleSelectClass(event) {
+        const selectButton = event.target.closest('.select-class-btn');
+        if (!selectButton) return;
+
+        const classId = selectButton.dataset.classId;
+        const className = selectButton.dataset.className;
+
+        localStorage.setItem('selectedClass', JSON.stringify({ id: classId, name: className }));
+        alert(`「${className}」を選択しました。`);
+
+        // defined in base.html
+        if (typeof updateCurrentClassDisplay === 'function') {
+            updateCurrentClassDisplay();
+        }
+    }
+
+    /**
+     * クラス全体の活動分析をフェッチして表示する
+     */
+    async function fetchClassAnalysis(classId) {
+        const analysisContentDiv = document.getElementById('class-analysis-content');
+        if (!classId) {
+            analysisContentDiv.innerHTML = '<p class="text-muted">クラスを選択すると、ここに分析結果が表示されます。</p>';
+            return;
+        }
+
+        analysisContentDiv.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+        try {
+            const response = await fetchWithAuth(`/api/teacher/class_analysis?class_id=${classId}`);
+            if (!response.ok) throw new Error('クラス分析の取得に失敗しました。');
+            
+            const result = await response.json();
+            if (result.status === 'success' && result.analysis) {
+                analysisContentDiv.innerHTML = `<div class="p-2">${result.analysis.replace(/\n/g, '<br>')}</div>`;
+            } else {
+                analysisContentDiv.innerHTML = `<div class="p-2 text-muted">${result.analysis || '分析結果がありませんでした。'}</div>`;
+            }
+        } catch (error) {
+            console.error('Error fetching class analysis:', error);
+            analysisContentDiv.innerHTML = `<div class="p-2 text-danger">クラス分析の読み込み中にエラーが発生しました。</div>`;
+        }
+    }
+
+    /**
+     * 個別生徒の活動レポートをフェッチして表示する
+     */
+    async function fetchStudentReport(classId, studentId) {
+        const reportContentDiv = document.getElementById('student-report-content');
+        if (!classId || !studentId) {
+            reportContentDiv.innerHTML = '<p class="text-muted">クラスと生徒を選択すると、ここにレポートが表示されます。</p>';
+            return;
+        }
+
+        reportContentDiv.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+        try {
+            const response = await fetchWithAuth(`/api/teacher/student_report?class_id=${classId}&student_line_user_id=${studentId}`);
+            if (!response.ok) throw new Error('生徒レポートの取得に失敗しました。');
+
+            const result = await response.json();
+            if (result.status === 'success' && result.report) {
+                const report = result.report;
+                reportContentDiv.innerHTML = `
+                    <div class="p-2 text-start">
+                        <h5>${report.student_name}さんの活動レポート (${report.class_name})</h5>
+                        <p><strong>総投稿数:</strong> ${report.total_posts}件</p>
+                        <p><strong>総文字数:</strong> ${report.total_word_count}字</p>
+                        <p><strong>平均文字数:</strong> ${report.average_word_count}字/件</p>
+                        <p><strong>最新投稿日:</strong> ${report.latest_post_date ? new Date(report.latest_post_date).toLocaleDateString('ja-JP') : 'なし'}</p>
+                        <hr>
+                        <h6>Geminiによる要約:</h6>
+                        <p>${report.gemini_summary.replace(/\n/g, '<br>')}</p>
+                    </div>
+                `;
+            } else {
+                reportContentDiv.innerHTML = `<div class="p-2 text-muted">${result.message || 'レポート結果がありませんでした。'}</div>`;
+            }
+        } catch (error) {
+            console.error('Error fetching student report:', error);
+            reportContentDiv.innerHTML = `<div class="p-2 text-danger">生徒レポートの読み込み中にエラーが発生しました。</div>`;
+        }
+    }
+
+    /**
+     * 作成済みクラス一覧を読み込んで表示
+     */
+    async function fetchAndDisplayClasses() {
+        const classListDiv = document.getElementById('class-list');
+        const classSelectForAnalysis = document.getElementById('class-select-for-analysis');
+        const classSelectForStudentReport = document.getElementById('class-select-for-student-report');
+        const studentSelectForReport = document.getElementById('student-select-for-report');
+
+        classListDiv.innerHTML = '<div class="d-flex justify-content-center mt-4"><div class="spinner-border" role="status"><span class="visually-hidden">読み込み中...</span></div></div>';
+        classSelectForAnalysis.innerHTML = '<option value="">クラスを選択してください</option>'; // Reset dropdown
+        classSelectForStudentReport.innerHTML = '<option value="">クラスを選択してください</option>'; // Reset dropdown
+        studentSelectForReport.innerHTML = '<option value="">生徒を選択してください</option>';
+        studentSelectForReport.disabled = true;
+
+        try {
+            const response = await fetchWithAuth('/api/teacher/classes');
+            const result = await response.json();
+
+            if (response.ok && result.status === 'success') {
+                allTeacherClasses = result.data; // Store all classes
+                classListDiv.innerHTML = '';
+                if (allTeacherClasses.length > 0) {
+                    const row = document.createElement('div');
+                    row.className = 'row row-cols-1 row-cols-md-2 g-4';
+                    const selectedClass = JSON.parse(localStorage.getItem('selectedClass'));
+
+                    allTeacherClasses.forEach(cls => {
+                        const isSelected = selectedClass && selectedClass.id === cls.id;
+                        const col = document.createElement('div');
+                        col.className = 'col';
+                        const cardHtml = `
+                            <div class="card h-100 shadow-sm ${isSelected ? 'border-primary' : ''}">
+                                <div class="card-body">
+                                    <h5 class="card-title">${cls.class_name}</h5>
+                                    <p class="card-text">
+                                        <b>クラスコード:</b> 
+                                        <span class="badge bg-secondary fs-6">${cls.class_code}</span>
+                                    </p>
+                                    <a href="/teacher/class/${cls.id}" class="btn btn-sm btn-outline-primary">クラスの詳細</a>
+                                    <a href="/teacher/assignments?class_id=${cls.id}" class="btn btn-sm btn-outline-info">課題管理</a>
+                                    <a href="/class_home?class_id=${cls.id}" class="btn btn-sm btn-outline-secondary">クラスホーム</a>
+                                    <button class="btn btn-sm btn-success select-class-btn" data-class-id="${cls.id}" data-class-name="${cls.class_name}">
+                                        ${isSelected ? '選択中' : 'このクラスを選択'}
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                        col.innerHTML = cardHtml;
+                        row.appendChild(col);
+
+                        // Add option to analysis dropdowns
+                        const optionAnalysis = document.createElement('option');
+                        optionAnalysis.value = cls.id;
+                        optionAnalysis.textContent = cls.class_name;
+                        classSelectForAnalysis.appendChild(optionAnalysis);
+
+                        const optionReport = document.createElement('option');
+                        optionReport.value = cls.id;
+                        optionReport.textContent = cls.class_name;
+                        classSelectForStudentReport.appendChild(optionReport);
+                    });
+                    classListDiv.appendChild(row);
+
+                    // Set selected class in analysis dropdowns if available
+                    if (selectedClass) {
+                        classSelectForAnalysis.value = selectedClass.id;
+                        fetchClassAnalysis(selectedClass.id); // Fetch analysis for the initially selected class
+
+                        classSelectForStudentReport.value = selectedClass.id;
+                        await updateStudentDropdown(selectedClass.id); // Populate student dropdown
+                    }
+                } else {
+                    classListDiv.innerHTML = '<div class="alert alert-secondary">まだ作成されたクラスはありません。</div>';
+                }
+            } else {
+                classListDiv.innerHTML = `<div class="alert alert-danger">クラス一覧の取得に失敗しました: ${result.message}</div>`;
+            }
+        } catch (error) {
+            console.error('Error fetching classes:', error);
+            classListDiv.innerHTML = '<div class="alert alert-danger">クラス一覧の取得中にエラーが発生しました。</div>';
+        }
+    }
+
+    async function updateStudentDropdown(classId) {
+        const studentSelectForReport = document.getElementById('student-select-for-report');
+        studentSelectForReport.innerHTML = '<option value="">生徒を選択してください</option>';
+        studentSelectForReport.disabled = true;
+        classStudentsMap.clear(); // Clear previous students
+
+        if (!classId) return;
+
+        try {
+            const response = await fetchWithAuth(`/api/teacher/class/${classId}`);
+            if (!response.ok) throw new Error('クラス詳細の取得に失敗しました。');
+            const result = await response.json();
+
+            if (result.status === 'success' && result.data && result.data.students) {
+                result.data.students.forEach(student => {
+                    const option = document.createElement('option');
+                    option.value = student.line_user_id;
+                    option.textContent = student.name;
+                    studentSelectForReport.appendChild(option);
+                    classStudentsMap.set(student.line_user_id, student); // Store student data
+                });
+                studentSelectForReport.disabled = false;
+            } else {
+                studentSelectForReport.innerHTML = '<option value="">生徒がいません</option>';
+            }
+        } catch (error) {
+            console.error('Error fetching students for dropdown:', error);
+            studentSelectForReport.innerHTML = '<option value="">生徒の取得に失敗しました</option>';
+        }
+    }
+
+    /**
+     * メイン処理
+     */
+    async function main() {
+        const teacherStatusDiv = document.getElementById('teacher-status');
+        const classManagementDiv = document.getElementById('class-management');
+
+        try {
+            await liff.init({ liffId: "{{ liff_id_primary }}" });
+
+            if (!liff.isLoggedIn()) {
+                teacherStatusDiv.innerHTML = '<div class="alert alert-danger">ログインしていません。ログインしてください。</div>';
+                liff.login({ redirectUri: window.location.href });
+                return;
+            }
+
+            const userProfileResponse = await fetchWithAuth('/api/user');
+            const userProfileResult = await userProfileResponse.json();
+
+            if (userProfileResponse.ok && userProfileResult.data.role === 'teacher') {
+                teacherStatusDiv.innerHTML = '<div class="alert alert-success">先生として認証されました。</div>';
+                classManagementDiv.style.display = 'block';
+
+                // 先生メニューを表示
+                document.getElementById('teacher-menu').style.display = 'list-item';
+                if (typeof updateCurrentClassDisplay === 'function') {
+                    updateCurrentClassDisplay();
+                }
+
+                document.getElementById('create-class-form').addEventListener('submit', handleCreateClass);
+                document.getElementById('class-list').addEventListener('click', handleSelectClass);
+                
+                document.getElementById('class-select-for-analysis').addEventListener('change', (event) => {
+                    fetchClassAnalysis(event.target.value);
+                });
+
+                document.getElementById('class-select-for-student-report').addEventListener('change', async (event) => {
+                    const classId = event.target.value;
+                    await updateStudentDropdown(classId);
+                    document.getElementById('student-report-content').innerHTML = '<p class="text-muted">クラスと生徒を選択すると、ここにレポートが表示されます。</p>';
+                });
+
+                document.getElementById('student-select-for-report').addEventListener('change', (event) => {
+                    const classId = document.getElementById('class-select-for-student-report').value;
+                    const studentId = event.target.value;
+                    fetchStudentReport(classId, studentId);
+                });
+
+                await fetchAndDisplayClasses();
+            } else {
+                let message = '先生として認証されませんでした。このページにはアクセスできません。';
+                if(!userProfileResponse.ok) message = `認証エラー: ${userProfileResult.message || '不明なエラー'}`;
+                teacherStatusDiv.innerHTML = `<div class="alert alert-danger">${message}</div>`;
+            }
+        } catch (error) {
+            console.error("LIFF処理中にエラーが発生しました。", error);
+            teacherStatusDiv.innerHTML = '<div class="alert alert-danger">エラーが発生しました。ページをリロードしてください。</div>';
+        }
+    }
+
+    main();
+</script>
+{% endblock %}
